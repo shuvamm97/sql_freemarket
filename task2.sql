@@ -1,34 +1,24 @@
-WITH client_live AS (
-  -- A client is "closed" only if all of their accounts are closed
-  SELECT c.ClientId,
-         CASE WHEN COUNT(*) FILTER (WHERE a.AccountStatus <> 'closed') > 0
-              THEN 'live' ELSE 'closed' END AS ClientLifecycleStatus,
-         c.Vertical
+WITH LiveClients AS (
+  SELECT c.ClientId
   FROM Client c
-  JOIN Account a ON a.ClientId = c.ClientId
-  GROUP BY c.ClientId, c.Vertical
+  JOIN Account a ON c.ClientId = a.ClientId
+  GROUP BY c.ClientId
+  HAVING SUM(CASE WHEN a.AccountStatus = 'live' THEN 1 ELSE 0 END) > 0
 ),
-completed_2024 AS (
-  SELECT it.*, da.Rate
+TransfersWithGBP AS (
+  SELECT it.*, der.Rate,
+         it.Amt * der.Rate AS GbpAmount,
+         sa.ClientId AS SenderClientId
   FROM InternalTransfers it
-  JOIN Account sa ON sa.AccountId = it.SenderAccountId
-  JOIN Client sc ON sc.ClientId = sa.ClientId
-  JOIN DailyExchangeRate da
-    ON da.FromCurrency = it.Currency
-   AND da.ToCurrency   = 'GBP'
-   AND da.Date = CAST(it.TransferTime AS date)
+  JOIN Account sa ON it.SenderAccountId = sa.AccountId
+  JOIN Client sc ON sa.ClientId = sc.ClientId
+  JOIN DailyExchangeRate der
+    ON it.Currency = der.FromCurrency
+   AND DATE(it.TransferTime) = der.Date
   WHERE it.TransferStatus = 'completed'
-    AND it.TransferTime >= '2024-01-01'::timestamp
-    AND it.TransferTime <  '2025-01-01'::timestamp
-),
-filtered AS (
-  SELECT c2024.*, cl.ClientLifecycleStatus, cl.Vertical
-  FROM completed_2024 c2024
-  JOIN Account sa ON sa.AccountId = c2024.SenderAccountId
-  JOIN Client sc ON sc.ClientId = sa.ClientId
-  JOIN client_live cl ON cl.ClientId = sc.ClientId
-  WHERE cl.Vertical = 'Gambling'
-    AND cl.ClientLifecycleStatus = 'live'
+    AND EXTRACT(YEAR FROM it.TransferTime) = 2024
+    AND sc.Vertical = 'Gambling'
+    AND sc.ClientId IN (SELECT ClientId FROM LiveClients)
 )
-SELECT COALESCE(SUM(Amt * Rate), 0) AS total_gbp_normalised_2024
-FROM filtered;
+SELECT SUM(GbpAmount) AS TotalGbpTransfers
+FROM TransfersWithGBP;
